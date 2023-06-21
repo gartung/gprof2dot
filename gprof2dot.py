@@ -1647,6 +1647,264 @@ class AXEParser(Parser):
 
         return profile
 
+class VtuneParser(Parser):
+    "Parser for VTune gprof-cc report output with semicolon delimiters."
+
+    def __init__(self, fp):
+        Parser.__init__(self)
+        self.fp = fp
+        self.functions = {}
+        self.cycles = {}
+
+    def readline(self):
+        line = self.fp.readline()
+        if not line:
+            sys.stderr.write('error: unexpected end of file\n')
+            sys.exit(1)
+        line = line.rstrip('\r\n')
+        return line
+
+    _int_re = re.compile(r'^\d+$')
+    _float_re = re.compile(r'^\d+\.\d+$')
+
+    def translate(self, mo):
+        """Extract a structure from a match object, while translating the types in the process."""
+        attrs = {}
+        groupdict = mo.groupdict()
+        #print(groupdict)
+        for name, value in compat_iteritems(groupdict):
+            if value is None:
+                value = None
+            elif self._int_re.match(value):
+                value = int(value)
+            elif self._float_re.match(value):
+                value = float(value)
+            attrs[name] = (value)
+        return Struct(attrs)
+
+    _cg_header_re = re.compile(
+        'Index;% CPU Time:Total;CPU Time:Self;CPU Time:Children;Name;Index'
+    )
+
+    _cg_footer_re = re.compile(r'^Index;Function$')
+
+    _cg_primary_re = re.compile(
+        r'^\[(?P<index>\d+)\];' +
+        r'(?P<percentage_time>\d+\.\d+);' +
+        r'(?P<self>\d+\.\d+);' +
+        r'(?P<descendants>\d+\.\d+);' +
+        r'(?P<name>\S.*?)' +
+        r'(?:\s+<cycle\s(?P<cycle>\d+)>)?;' +
+        r'\[(\d+)\]$'
+    )
+    assert(_cg_primary_re.match('[1];108.69;0.099967;8162.684926;[Stitch point frame] <cycle 95>;[1]'))
+    _cg_parent_re = re.compile(
+        r'^;;(?P<self>\d+\.\d+)?' +
+        r';(?P<descendants>\d+\.\d+)?' +
+        r';\s\s((?P<name>\S.*?)' +
+        r'(?:\s<cycle\s(?P<cycle>\d+)>)?' +
+        r';(?:\[(?P<index>\d+)\])|<spontaneous>;)$'
+    )
+    assert(_cg_parent_re.match(';;;;  tbb::detail::r1::task_group_context_impl::bind_to <cycle 95>;[25074]'))
+    assert(_cg_parent_re.match(';;;;  <spontaneous>;'))
+    _cg_child_re = _cg_parent_re
+    assert(_cg_child_re.match(';;0.109114;2.155263;  execute <cycle 15>;[29946]'))
+    assert(_cg_child_re.match(';;0.020019;0.0;  TObjArray::operator[];[17803]'))
+    assert(_cg_child_re.match(';;;;  task_ptr_or_nullptr<const edm::WaitingTaskHolder::doneWaiting(std::__exception_ptr::exception_ptr)::<lambda()>&> <cycle 95>;[54425]'))
+    _cg_cycle_header_re = re.compile(
+        r'^\[(?P<index>\d+)\]?;' +
+        r'(?P<percentage_time>\d+\.\d+)?;' +
+        r'(?P<self>\d+\.\d+)?;' +
+        r'(?P<descendants>\d+\.\d+)?;' +
+        r'<cycle\s(?P<cycle>\d+)\sas\sa\swhole>;' +
+        r'\[(\d+)\]$'
+    )
+    assert(_cg_cycle_header_re.match('[2];99.99;192.093033;7317.508338;<cycle 15 as a whole>;[2]'))
+
+    _cg_cycle_member_re = re.compile(
+        r'^;;(?P<self>\d+\.\d+)?' +
+        r';(?P<descendants>\d+\.\d+)?' +
+        r';\s\s(?P<name>\S.*?)' +
+        r'(?:\s+<cycle\s(?P<cycle>\d+)>)?' +
+        r';\[(?P<index>\d+)\]$'
+    )
+    assert(_cg_cycle_member_re.match(';;48.451673;19.315687;  PFBlockAlgo::findBlocks <cycle 15>;[307]'))
+    def parse_function_entry(self, lines):
+        parents = []
+        children = []
+
+        while True:
+            if not lines:
+                sys.stderr.write('warning: unexpected end of entry\n')
+                return
+            line = lines.pop(0)
+            if line.startswith('['):
+                break
+            # read function parent line
+            mo = self._cg_parent_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (1): %r\n' % line)
+            else:
+                parent = self.translate(mo)
+                if parent.name != '<spontaneous>':
+                    parents.append(parent)
+
+        # read primary line
+        mo = self._cg_primary_re.match(line)
+        if not mo:
+            sys.stderr.write('warning: unrecognized call graph entry (2): %r\n' % line)
+            return
+        else:
+            function = self.translate(mo)
+
+        while lines:
+            line = lines.pop(0)
+
+            # read function subroutine line
+            mo = self._cg_child_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (3): %r\n' % line)
+            else:
+                child = self.translate(mo)
+                if child.name != '<spontaneous>':
+                    children.append(child)
+
+        if function.name != '<spontaneous>':
+            function.parents = parents
+            function.children = children
+
+            self.functions[function.index] = function
+
+    def parse_cycle_entry(self, lines):
+
+        # Process the parents that were not there in gprof format.
+        parents = []
+        while True:
+            if not lines:
+                sys.stderr.write('warning: unexpected end of cycle entry\n')
+                return
+            line = lines.pop(0)
+            if line.startswith('['):
+                break
+            mo = self._cg_parent_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (6): %r\n' % line)
+            else:
+                parent = self.translate(mo)
+                if parent.name != '<spontaneous>':
+                    parents.append(parent)
+
+        # read cycle header line
+        mo = self._cg_cycle_header_re.match(line)
+        if not mo:
+            sys.stderr.write('warning: unrecognized call graph entry (4): %r\n' % line)
+            return
+        cycle = self.translate(mo)
+
+        # read cycle member lines
+        cycle.functions = []
+        for line in lines[1:]:
+            mo = self._cg_cycle_member_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (5): %r\n' % line)
+                continue
+            call = self.translate(mo)
+            cycle.functions.append(call)
+
+        cycle.parents = parents
+        self.cycles[cycle.cycle] = cycle
+
+    def parse_cg_entry(self, lines):
+        if any("as a whole" in linelooper for linelooper in lines):
+            self.parse_cycle_entry(lines)
+        else:
+            self.parse_function_entry(lines)
+
+    def parse_cg(self):
+        """Parse the call graph."""
+
+        # skip call graph header
+        line = self.readline()
+        while self._cg_header_re.match(line):
+            line = self.readline()
+
+        # process call graph entries
+        entry_lines = []
+        # An EOF in readline terminates the program without returning.
+        while not self._cg_footer_re.match(line):
+            if line == ';;;;;':
+                self.parse_cg_entry(entry_lines)
+                entry_lines = []
+            else:
+                entry_lines.append(line)
+            line = self.readline()
+
+    def parse(self):
+        #sys.stderr.write('warning: for axe format, edge weights are unreliable estimates derived from function total times.\n')
+        self.parse_cg()
+        self.fp.close()
+
+        profile = Profile()
+        profile[TIME] = 0.0
+
+        cycles = {}
+        for index in self.cycles:
+            cycles[index] = Cycle()
+
+        for entry in compat_itervalues(self.functions):
+            # populate the function
+            function = Function(entry.index, entry.name)
+            function[TIME] = entry.self
+            function[TOTAL_TIME_RATIO] = entry.percentage_time / 100.0
+
+            # populate the function calls
+            for child in entry.children:
+                call = Call(child.index)
+                # The following bogus value affects only the weighting of
+                # the calls.
+                call[TOTAL_TIME_RATIO] = function[TOTAL_TIME_RATIO]
+
+                if child.index not in self.functions:
+                    # NOTE: functions that were never called but were discovered by gprof's
+                    # static call graph analysis dont have a call graph entry so we need
+                    # to add them here
+                    # FIXME: Is this applicable?
+                    missing = Function(child.index, child.name)
+                    function[TIME] = 0.0
+                    profile.add_function(missing)
+
+                function.add_call(call)
+
+            profile.add_function(function)
+
+            if entry.cycle is not None:
+                try:
+                    cycle = cycles[entry.cycle]
+                except KeyError:
+                    sys.stderr.write('warning: <cycle %u as a whole> entry missing\n' % entry.cycle)
+                    cycle = Cycle()
+                    cycles[entry.cycle] = cycle
+                cycle.add_function(function)
+
+            profile[TIME] = profile[TIME] + function[TIME]
+
+        for cycle in compat_itervalues(cycles):
+            profile.add_cycle(cycle)
+
+        # Compute derived events.
+        profile.validate()
+        profile.ratio(TIME_RATIO, TIME)
+        # Lacking call counts, fake call ratios based on total times.
+        profile.call_ratios(TOTAL_TIME_RATIO)
+        # The TOTAL_TIME_RATIO of functions is already set.  Propagate that
+        # total time to the calls.  (TOTAL_TIME is neither set nor used.)
+        for function in compat_itervalues(profile.functions):
+            for call in compat_itervalues(function.calls):
+                if call.ratio is not None:
+                    callee = profile.functions[call.callee_id]
+                    call[TOTAL_TIME_RATIO] = call.ratio * callee[TOTAL_TIME_RATIO]
+
+        return profile
 
 class CallgrindParser(LineParser):
     """Parser for valgrind's callgrind tool.
@@ -2918,6 +3176,7 @@ class DtraceParser(LineParser):
 
 formats = {
     "axe": AXEParser,
+    "vtune": VtuneParser,
     "callgrind": CallgrindParser,
     "hprof": HProfParser,
     "json": JsonParser,
@@ -3180,7 +3439,7 @@ class DotWriter:
             # dot can't parse quoted strings longer than YY_BUF_SIZE, which
             # defaults to 16K. But some annotated C++ functions (e.g., boost,
             # https://github.com/jrfonseca/gprof2dot/issues/30) can exceed that
-            MAX_FUNCTION_NAME = 4096
+            MAX_FUNCTION_NAME = 40960
             if len(function_name) >= MAX_FUNCTION_NAME:
                 sys.stderr.write('warning: truncating function name with %u chars (%s)\n' % (len(function_name), function_name[:32] + '...'))
                 function_name = function_name[:MAX_FUNCTION_NAME - 1] + chr(0x2026)
