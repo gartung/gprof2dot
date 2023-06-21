@@ -1672,7 +1672,7 @@ class VtuneParser(Parser):
         attrs = {}
         groupdict = mo.groupdict()
         #print(groupdict)
-        for name, value in compat_iteritems(groupdict):
+        for name, value in sorted_iteritems(groupdict):
             if value is None:
                 value = None
             elif self._int_re.match(value):
@@ -1851,7 +1851,7 @@ class VtuneParser(Parser):
         for index in self.cycles:
             cycles[index] = Cycle()
 
-        for entry in compat_itervalues(self.functions):
+        for entry in self.functions.values():
             # populate the function
             function = Function(entry.index, entry.name)
             function[TIME] = entry.self
@@ -1888,7 +1888,7 @@ class VtuneParser(Parser):
 
             profile[TIME] = profile[TIME] + function[TIME]
 
-        for cycle in compat_itervalues(cycles):
+        for cycle in cycles.values():
             profile.add_cycle(cycle)
 
         # Compute derived events.
@@ -1898,8 +1898,8 @@ class VtuneParser(Parser):
         profile.call_ratios(TOTAL_TIME_RATIO)
         # The TOTAL_TIME_RATIO of functions is already set.  Propagate that
         # total time to the calls.  (TOTAL_TIME is neither set nor used.)
-        for function in compat_itervalues(profile.functions):
-            for call in compat_itervalues(function.calls):
+        for function in profile.functions.values():
+            for call in function.calls.values():
                 if call.ratio is not None:
                     callee = profile.functions[call.callee_id]
                     call[TOTAL_TIME_RATIO] = call.ratio * callee[TOTAL_TIME_RATIO]
