@@ -3741,7 +3741,8 @@ with '%', a dump of all available information is performed for selected entries,
         parser = Format(args[0])
 
     profile = parser.parse()
-
+    if True:
+        profile.dump()
     if options.output is None:
         output = open(sys.stdout.fileno(), mode='wt', encoding='UTF-8', closefd=False)
     else:
@@ -3757,7 +3758,7 @@ with '%', a dump of all available information is performed for selected entries,
         dot.show_function_events.append(SAMPLES)
 
     profile = profile
-    profile.prune(options.node_thres/100.0, options.edge_thres/100.0, options.filter_paths, options.color_nodes_by_selftime)
+    #profile.prune(options.node_thres/100.0, options.edge_thres/100.0, options.filter_paths, options.color_nodes_by_selftime)
 
     if options.list_functions:
         profile.printFunctionIds(selector=options.list_functions)
@@ -3776,7 +3777,7 @@ with '%', a dump of all available information is performed for selected entries,
             sys.exit(1)
         profile.prune_leaf(leafIds, options.depth)
 
-    dot.graph(profile, theme)
+#    dot.graph(profile, theme)
 
 
 if __name__ == '__main__':
