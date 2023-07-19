@@ -110,6 +110,14 @@ def ratio(numerator, denominator):
     return ratio
 
 
+def sorted_iteritems(d):
+    # Used mostly for result reproducibility (while testing.)
+    keys = list(d.keys())
+    keys.sort()
+    for key in keys:
+        value = d[key]
+        yield key, value
+
 class UndefinedEvent(Exception):
     """Raised when attempting to get an event which is undefined."""
 
@@ -1142,6 +1150,7 @@ class VtuneParser(Parser):
 
         return profile
 
+formats = {"vtune": VtuneParser,}
 
 class SQLiteWriter:
     """Writer for the SQLite language.
@@ -1335,7 +1344,39 @@ def naturalJoin(values):
 
 def main(argv=sys.argv[1:]):
     """Main program."""
-    parser = VtuneParser()
+
+    optparser = optparse.OptionParser(
+        usage="\n\t%prog [options] [file] ...")
+    optparser.add_option(
+        '-o', '--output', metavar='FILE',
+        type="string", dest="output",
+        help="output filename [stdout]")
+    (options, args) = optparser.parse_args(argv)
+
+    Format = formats["vtune"]
+    if Format.stdinInput:
+        if not args:
+            fp = sys.stdin
+        else:
+            fp = open(args[0], 'rt', encoding='UTF-8')
+        parser = Format(fp)
+    else:
+        if len(args) != 1:
+            optparser.error('exactly one file must be specified for %s input' % options.format)
+        parser = Format(args[0])
+
     profile = parser.parse()
+
+    if options.output is None:
+        output = open(sys.stdout.fileno(), mode='wt', encoding='UTF-8', closefd=False)
+    else:
+        output = open(options.output, 'wt', encoding='UTF-8')
+
+    mysql = SQLiteWriter(output)
+    mysql.graph(profile)
     if True:
        profile.dump()
+
+if __name__ == '__main__':
+    main()
+
