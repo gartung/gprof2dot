@@ -120,8 +120,8 @@ TOTAL_SAMPLES = Event("Samples", 0, add, times)
 
 TIME = Event("Time", 0.0, add, lambda x: str(x))
 TIME_RATIO = Event("Time ratio", 0.0, add, lambda x: percentage(x))
-TOTAL_TIME = Event("Total time", 0.0, fail)
-TOTAL_TIME_RATIO = Event("Total time ratio", 0.0, fail, percentage)
+TOTAL_TIME = Event("Total time", 0.0, fail, lambda x: str(x))
+TOTAL_TIME_RATIO = Event("Total time ratio", 0.0, fail, lambda x: percentage(x))
 
 labels = {
     'self-time': TIME,
@@ -1174,6 +1174,7 @@ pct REAL
 PRAGMA synchronous=OFF;\n
 BEGIN_TRANSACTION;\n
 INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0);\n
+INSERT INTO files VALUES(1, "<unknown>");\n
 """
         self.write(begincommands)
 
@@ -1188,16 +1189,18 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.write(endcommands)
 
     def attr(self, what, **attrs):
-        self.write("\t")
         self.write(what)
         self.attr_list(attrs)
-        self.write(";\n")
 
     def node(self, node, **attrs):
-        self.write("INSERT INTO mainrows VALUES (")
+        self.write("INSERT INTO symbols VALUES(")
         self.id(node)
         self.write(", ")
         self.id(attrs["symbol"])
+        self.write(", 1);\n")
+
+        self.write("INSERT INTO mainrows VALUES (")
+        self.id(node)
         self.write(", ")
         self.id(attrs["symbol_id"])
         self.write(", ")
