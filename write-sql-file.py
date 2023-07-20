@@ -12,64 +12,6 @@ import locale
 import json
 import fnmatch
 
-assert sys.version_info[0] >= 3
-brackets=re.compile(r'\[[0-9]*\]')
-
-createcommands = """
-             PRAGMA journal_mode=OFF;\n
-             PRAGMA count_changes=OFF;\n
-             DROP TABLE IF EXISTS files;\n
-             DROP TABLE IF EXISTS symbols;\n
-             DROP TABLE IF EXISTS mainrows;\n
-             DROP TABLE IF EXISTS children;\n
-             DROP TABLE IF EXISTS parents;\n
-             DROP TABLE IF EXISTS summary;\n\n
-             CREATE TABLE summary (\n
-             counter TEXT,\n
-             total_count INTEGER,\n
-             total_freq INTEGER,\n
-             tick_period REAL\n
-             );\n\n
-             CREATE TABLE files (\n
-             id,\n
-             name TEXT\n
-             );\n\n
-             CREATE TABLE symbols (\n
-             id,\n
-             name TEXT,\n
-             filename_id INTEGER CONSTRAINT file_id_exists REFERENCES files(id)\n
-             );\n\n
-             CREATE TABLE mainrows (\n
-             id INTEGER PRIMARY KEY,\n
-             symbol_id INTEGER CONSTRAINT symbol_id_exists REFERENCES symbols(id),\n
-             self_count INTEGER,\n
-             cumulative_count INTEGER,\n
-             kids INTEGER,\n
-             self_calls INTEGER,\n
-             total_calls INTEGER,\n
-             self_paths INTEGER,\n
-             total_paths INTEGER,\n
-             pct REAL\n
-             );\n\n
-             CREATE TABLE children (\n
-             self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),\n
-             parent_id INTEGER CONSTRAINT parent_exists REFERENCES mainrows(id),\n
-             from_parent_count INTEGER,\n
-             from_parent_calls INTEGER,\n
-             from_parent_paths INTEGER,\n
-             pct REAL\n
-             );\n\n
-             CREATE TABLE parents (\n
-             self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),\n
-             child_id INTEGER CONSTRAINT child_exists REFERENCES mainrows(id),\n
-             to_child_count INTEGER,\n
-             to_child_calls INTEGER,\n
-             to_child_paths INTEGER,\n
-             pct REAL\n
-             );\nPRAGMA synchronous=OFF;\n
-             INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0)
-"""
-
 
 ########################################################################
 # Model
@@ -176,8 +118,8 @@ SAMPLES2 = Event("Samples", 0, add, times)
 # Used only when totalMethod == callstacks
 TOTAL_SAMPLES = Event("Samples", 0, add, times)
 
-TIME = Event("Time", 0.0, add, lambda x: '(' + str(x) + ')')
-TIME_RATIO = Event("Time ratio", 0.0, add, lambda x: '(' + percentage(x) + ')')
+TIME = Event("Time", 0.0, add, lambda x: str(x))
+TIME_RATIO = Event("Time ratio", 0.0, add, lambda x: percentage(x))
 TOTAL_TIME = Event("Total time", 0.0, fail)
 TOTAL_TIME_RATIO = Event("Total time ratio", 0.0, fail, percentage)
 
@@ -1165,100 +1107,85 @@ class SQLiteWriter:
 
     def graph(self, profile):
         self.begin_graph()
-
+        labels=[]
         for _, function in sorted_iteritems(profile.functions):
-            labels = []
-            symbol = function.name
-            labels.append(symbol)
-            for event in self.show_function_events:
-                if event in function.events:
-                    label = event.format(function[event])
-                    labels.append(label)
-            if function.called is not None:
-                labels.append("%u%s" % (function.called, MULTIPLICATION_SIGN))
-            label=','.join(labels)
-            self.node(function.id,label=label,)
+            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=0,cumulative_count=0,kids=0,self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
 
             for _, call in sorted_iteritems(function.calls):
                 callee = profile.functions[call.callee_id]
 
-                labels = []
-                for event in self.show_edge_events:
-                    if event in call.events:
-                        label = event.format(call[event])
-                        labels.append(label)
-
-                if call.weight is not None:
-                    weight = call.weight
-                elif callee.weight is not None:
-                    weight = callee.weight
-                else:
-                    weight = 0.0
-                label = '\n'.join(labels)
-                self.edge(function.id, call.callee_id ,label=label,)
+                self.edge(function.id, call.callee_id , count=0, calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
 
         self.end_graph()
 
     def begin_graph(self):
-        createcommands = """
-             PRAGMA journal_mode=OFF;
-             PRAGMA count_changes=OFF;
-             DROP TABLE IF EXISTS files;
-             DROP TABLE IF EXISTS symbols;
-             DROP TABLE IF EXISTS mainrows;
-             DROP TABLE IF EXISTS children;
-             DROP TABLE IF EXISTS parents;
-             DROP TABLE IF EXISTS summary;\n
-             CREATE TABLE summary (
-             counter TEXT,
-             total_count INTEGER,
-             total_freq INTEGER,
-             tick_period REAL
-             );\n
-             CREATE TABLE files (
-             id,
-             name TEXT
-             );\n
-             CREATE TABLE symbols (
-             id,
-             name TEXT,
-             filename_id INTEGER CONSTRAINT file_id_exists REFERENCES files(id)
-             );\n
-             CREATE TABLE mainrows (
-             id INTEGER PRIMARY KEY,
-             symbol_id INTEGER CONSTRAINT symbol_id_exists REFERENCES symbols(id),
-             self_count INTEGER,
-             cumulative_count INTEGER,
-             kids INTEGER,
-             self_calls INTEGER,
-             total_calls INTEGER,
-             self_paths INTEGER,
-             total_paths INTEGERn
-             pct REAL
-             );\n
-             CREATE TABLE children (
-             self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
-             parent_id INTEGER CONSTRAINT parent_exists REFERENCES mainrows(id),
-             from_parent_count INTEGER,
-             from_parent_calls INTEGER,
-             from_parent_paths INTEGER,
-             pct REAL
-             );\n
-             CREATE TABLE parents (
-             self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
-             child_id INTEGER CONSTRAINT child_exists REFERENCES mainrows(id),
-             to_child_count INTEGER,
-             to_child_calls INTEGER,
-             to_child_paths INTEGER,
-             pct REAL
-             );
-             PRAGMA synchronous=OFF;
-             INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0)
+        begincommands = """
+PRAGMA journal_mode=OFF;
+PRAGMA count_changes=OFF;
+DROP TABLE IF EXISTS files;
+DROP TABLE IF EXISTS symbols;
+DROP TABLE IF EXISTS mainrows;
+DROP TABLE IF EXISTS children;
+DROP TABLE IF EXISTS parents;
+DROP TABLE IF EXISTS summary;\n
+CREATE TABLE summary (
+counter TEXT,
+total_count INTEGER,
+total_freq INTEGER,
+tick_period REAL
+);\n
+CREATE TABLE files (
+id,
+name TEXT
+);\n
+CREATE TABLE symbols (
+id,
+name TEXT,
+filename_id INTEGER CONSTRAINT file_id_exists REFERENCES files(id)
+);\n
+CREATE TABLE mainrows (
+id INTEGER PRIMARY KEY,
+symbol_id INTEGER CONSTRAINT symbol_id_exists REFERENCES symbols(id),
+self_count INTEGER,
+cumulative_count INTEGER,
+kids INTEGER,
+self_calls INTEGER,
+total_calls INTEGER,
+self_paths INTEGER,
+total_paths INTEGERn
+pct REAL
+);\n
+CREATE TABLE children (
+self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
+parent_id INTEGER CONSTRAINT parent_exists REFERENCES mainrows(id),
+from_parent_count INTEGER,
+from_parent_calls INTEGER,
+from_parent_paths INTEGER,
+pct REAL
+);\n
+CREATE TABLE parents (
+self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
+child_id INTEGER CONSTRAINT child_exists REFERENCES mainrows(id),
+to_child_count INTEGER,
+to_child_calls INTEGER,
+to_child_paths INTEGER,
+pct REAL
+);\n
+PRAGMA synchronous=OFF;\n
+BEGIN_TRANSACTION;\n
+INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0);\n
 """
-        self.write(createcommands)
+        self.write(begincommands)
 
     def end_graph(self):
-        self.write('}\n')
+        endcommands="""
+END TRANSACTION;\n
+CREATE UNIQUE INDEX fileIndex ON files (id);
+CREATE UNIQUE INDEX symbolsIndex ON symbols (id);
+CREATE INDEX selfCountIndex ON mainrows(self_count);
+CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
+"""
+        self.write(endcommands)
 
     def attr(self, what, **attrs):
         self.write("\t")
@@ -1267,23 +1194,61 @@ class SQLiteWriter:
         self.write(";\n")
 
     def node(self, node, **attrs):
-        self.write("\t")
+        self.write("INSERT INTO mainrows VALUES (")
         self.id(node)
-        self.attr_list(attrs)
-        self.write(";\n")
+        self.write(", ")
+        self.id(attrs["symbol"])
+        self.write(", ")
+        self.id(attrs["symbol_id"])
+        self.write(", ")
+        self.id(attrs["self_count"])
+        self.write(", ")
+        self.id(attrs["cumulative_count"])
+        self.write(", ")
+        self.id(attrs["kids"])
+        self.write(", ")
+        self.id(attrs["self_calls"])
+        self.write(", ")
+        self.id(attrs["total_calls"])
+        self.write(", ")
+        self.id(attrs["self_paths"])
+        self.write(", ")
+        self.id(attrs["total_paths"])
+        self.write(", ")
+        self.id(attrs["pct"])
+        self.write(");\n")
 
     def edge(self, src, dst, **attrs):
-        self.write("\t")
+        self.write("INSERT INTO children VALUES (")
         self.id(src)
-        self.write(" -> ")
+        self.write(", ")
         self.id(dst)
-        self.attr_list(attrs)
-        self.write(";\n")
+        self.write(", ")
+        self.id(attrs["count"])
+        self.write(", ")
+        self.id(attrs["calls"])
+        self.write(", ")
+        self.id(attrs["paths"])
+        self.write(", ")
+        self.id(attrs["pct"])
+        self.write(");\n")
+        self.write("INSERT INTO parents VALUES (")
+        self.id(dst)
+        self.write(", ")
+        self.id(src)
+        self.write(", ")
+        self.id(attrs["count"])
+        self.write(", ")
+        self.id(attrs["calls"])
+        self.write(", ")
+        self.id(attrs["paths"])
+        self.write(", ")
+        self.id(attrs["pct"])
+        self.write(");\n")
 
     def attr_list(self, attrs):
         if not attrs:
             return
-        self.write(' [')
         first = True
         for name, value in sorted_iteritems(attrs):
             if value is None:
@@ -1292,10 +1257,7 @@ class SQLiteWriter:
                 first = False
             else:
                 self.write(", ")
-            self.id(name)
-            self.write('=')
             self.id(value)
-        self.write(']')
 
     def id(self, id):
         if isinstance(id, (int, float)):
@@ -1309,25 +1271,13 @@ class SQLiteWriter:
             raise TypeError
         self.write(s)
 
-    def color(self, rgb):
-        r, g, b = rgb
-
-        def float2int(f):
-            if f <= 0.0:
-                return 0
-            if f >= 1.0:
-                return 255
-            return int(255.0*f + 0.5)
-
-        return "#" + "".join(["%02x" % float2int(c) for c in (r, g, b)])
-
     def escape(self, s):
         s = s.replace('\\', r'\\')
         s = s.replace('\n', r'\n')
         s = s.replace('\t', r'\t')
         s = s.replace('"', r'\"')
         return '"' + s + '"'
-        
+
     def write(self, s):
         self.fp.write(s)
 
@@ -1374,8 +1324,8 @@ def main(argv=sys.argv[1:]):
 
     mysql = SQLiteWriter(output)
     mysql.graph(profile)
-    if True:
-       profile.dump()
+    profile.dump()
+
 
 if __name__ == '__main__':
     main()
