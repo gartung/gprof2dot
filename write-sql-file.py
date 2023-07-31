@@ -932,6 +932,7 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (1): %r\n' % line)
             else:
                 parent = self.translate(mo)
+                #print("function parent : %s" % parent)
                 if parent.name != '<spontaneous>':
                     parents.append(parent)
 
@@ -942,6 +943,7 @@ class VtuneParser(Parser):
             return
         else:
             function = self.translate(mo)
+            #print("function : %s" % function)
 
         while lines:
             line = lines.pop(0)
@@ -952,6 +954,7 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (3): %r\n' % line)
             else:
                 child = self.translate(mo)
+                #print("function child : %s" % child)
                 if child.name != '<spontaneous>':
                     children.append(child)
 
@@ -977,6 +980,7 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (6): %r\n' % line)
             else:
                 parent = self.translate(mo)
+                #print("cycle parent : %s" % parent)
                 if parent.name != '<spontaneous>':
                     parents.append(parent)
 
@@ -986,6 +990,7 @@ class VtuneParser(Parser):
             sys.stderr.write('warning: unrecognized call graph entry (4): %r\n' % line)
             return
         cycle = self.translate(mo)
+        #print("cycle : %s" % cycle)
 
         # read cycle member lines
         cycle.functions = []
@@ -995,6 +1000,7 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (5): %r\n' % line)
                 continue
             call = self.translate(mo)
+            #print("call : %s" % call)
             cycle.functions.append(call)
 
         cycle.parents = parents
@@ -1152,7 +1158,7 @@ kids INTEGER,
 self_calls INTEGER,
 total_calls INTEGER,
 self_paths INTEGER,
-total_paths INTEGERn
+total_paths INTEGER,
 pct REAL
 );\n
 CREATE TABLE children (
@@ -1172,7 +1178,7 @@ to_child_paths INTEGER,
 pct REAL
 );\n
 PRAGMA synchronous=OFF;\n
-BEGIN_TRANSACTION;\n
+BEGIN TRANSACTION;\n
 INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0);\n
 INSERT INTO files VALUES(1, "<unknown>");\n
 """
@@ -1193,61 +1199,61 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.attr_list(attrs)
 
     def node(self, node, **attrs):
-        self.write("INSERT INTO symbols VALUES(")
+        self.write('INSERT INTO symbols VALUES(')
         self.id(node)
-        self.write(", ")
-        self.id(attrs["symbol"])
-        self.write(", 1);\n")
+        self.write(', ')
+        self.id(str(attrs["symbol"]))
+        self.write(', 1);\n')
 
-        self.write("INSERT INTO mainrows VALUES (")
+        self.write('INSERT INTO mainrows VALUES (')
         self.id(node)
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["symbol_id"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["self_count"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["cumulative_count"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["kids"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["self_calls"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["total_calls"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["self_paths"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["total_paths"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["pct"])
-        self.write(");\n")
+        self.write(');\n')
 
     def edge(self, src, dst, **attrs):
-        self.write("INSERT INTO children VALUES (")
+        self.write('INSERT INTO children VALUES (')
         self.id(src)
-        self.write(", ")
+        self.write(', ')
         self.id(dst)
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["count"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["calls"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["paths"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["pct"])
-        self.write(");\n")
-        self.write("INSERT INTO parents VALUES (")
+        self.write(');\n')
+        self.write('INSERT INTO parents VALUES (')
         self.id(dst)
-        self.write(", ")
+        self.write(', ')
         self.id(src)
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["count"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["calls"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["paths"])
-        self.write(", ")
+        self.write(', ')
         self.id(attrs["pct"])
-        self.write(");\n")
+        self.write(');\n')
 
     def attr_list(self, attrs):
         if not attrs:
@@ -1263,8 +1269,10 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
             self.id(value)
 
     def id(self, id):
-        if isinstance(id, (int, float)):
+        if isinstance(id, int):
             s = str(id)
+        elif isinstance(id, float):
+            s = "{:2.4f}".format(id)
         elif isinstance(id, str):
             if id.isalnum() and not id.startswith('0x'):
                 s = id
