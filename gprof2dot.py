@@ -134,6 +134,7 @@ SAMPLES2 = Event("Samples", 0, add, times)
 TOTAL_SAMPLES = Event("Samples", 0, add, times)
 
 TIME = Event("Time", 0.0, add, lambda x: '(' + str(x) + ')')
+KIDS_TIME = Event("Descendants Time", 0.0, add, lambda x: str(x))
 TIME_RATIO = Event("Time ratio", 0.0, add, lambda x: '(' + percentage(x) + ')')
 TOTAL_TIME = Event("Total time", 0.0, fail)
 TOTAL_TIME_RATIO = Event("Total time ratio", 0.0, fail, percentage)
@@ -1647,6 +1648,284 @@ class AXEParser(Parser):
 
         return profile
 
+class VtuneParser(Parser):
+    "Parser for VTune gprof-cc report output with semicolon delimiters."
+
+    def __init__(self, fp):
+        Parser.__init__(self)
+        self.fp = fp
+        self.functions = {}
+        self.cycles = {}
+
+    def readline(self):
+        line = self.fp.readline()
+        if not line:
+            sys.stderr.write('error: unexpected end of file\n')
+            sys.exit(1)
+        line = line.rstrip('\r\n')
+        return line
+
+    _int_re = re.compile(r'^\d+$')
+    _float_re = re.compile(r'^\d+\.\d+$')
+
+    def translate(self, mo):
+        """Extract a structure from a match object, while translating the types in the process."""
+        attrs = {}
+        groupdict = mo.groupdict()
+        for name, value in sorted_iteritems(groupdict):
+            if value is None:
+                value = None
+            elif self._int_re.match(value):
+                value = int(value)
+            elif self._float_re.match(value):
+                value = float(value)
+            attrs[name] = (value)
+        return Struct(attrs)
+
+    _cg_header_re = re.compile(
+        'Index;% CPU Time:Total;CPU Time:Self;CPU Time:Children;Name;Index'
+    )
+
+    _cg_footer_re = re.compile(r'^Index;Function$')
+
+    _cg_primary_re = re.compile(
+        r'^\[(?P<index>\d+)\];' +
+        r'(?P<percentage_time>\d+\.\d+);' +
+        r'(?P<self_time>\d+\.\d+);' +
+        r'(?P<descendants_time>(-)?\d+\.\d+);' +
+        r'(?P<name>\S.*?)' +
+        r'(?:\s+<cycle\s(?P<cycle>\d+)>)?;' +
+        r'\[(\d+)\]$'
+    )
+    assert(_cg_primary_re.match('[1];108.69;0.099967;8162.684926;[Stitch point frame] <cycle 95>;[1]'))
+    _cg_parent_re = re.compile(
+        r'^;;(?P<self_time>\d+\.\d+)?' +
+        r';(?P<descendants_time>\d+\.\d+)?' +
+        r';\s\s((?P<name>\S.*?)' +
+        r'(?:\s<cycle\s(?P<cycle>\d+)>)?' +
+        r';(?:\[(?P<index>\d+)\])|<spontaneous>;)$'
+    )
+    assert(_cg_parent_re.match(';;;;  tbb::detail::r1::task_group_context_impl::bind_to <cycle 95>;[25074]'))
+    assert(_cg_parent_re.match(';;;;  <spontaneous>;'))
+    _cg_child_re = _cg_parent_re
+    assert(_cg_child_re.match(';;0.109114;2.155263;  execute <cycle 15>;[29946]'))
+    assert(_cg_child_re.match(';;0.020019;0.0;  TObjArray::operator[];[17803]'))
+    assert(_cg_child_re.match(';;;;  task_ptr_or_nullptr<const edm::WaitingTaskHolder::doneWaiting(std::__exception_ptr::exception_ptr)::<lambda()>&> <cycle 95>;[54425]'))
+    _cg_cycle_header_re = re.compile(
+        r'^\[(?P<index>\d+)\]?;' +
+        r'(?P<percentage_time>\d+\.\d+)?;' +
+        r'(?P<self_time>\d+\.\d+)?;' +
+        r'(?P<descendants_time>-?\d+\.\d+)?;' +
+        r'<cycle\s(?P<cycle>\d+)\sas\sa\swhole>;' +
+        r'\[(\d+)\]$'
+    )
+    assert(_cg_cycle_header_re.match('[2];99.99;192.093033;7317.508338;<cycle 15 as a whole>;[2]'))
+    assert(_cg_cycle_header_re.match('[1346];0.03;0.480006;-0.000000;<cycle 25 as a whole>;[1346]'))
+
+    _cg_cycle_member_re = re.compile(
+        r'^;;(?P<self_time>\d+\.\d+)?' +
+        r';(?P<descendants_time>\d+\.\d+)?' +
+        r';\s\s(?P<name>\S.*?)' +
+        r'(?:\s+<cycle\s(?P<cycle>\d+)>)?' +
+        r';\[(?P<index>\d+)\]$'
+    )
+    assert(_cg_cycle_member_re.match(';;48.451673;19.315687;  PFBlockAlgo::findBlocks <cycle 15>;[307]'))
+    def parse_function_entry(self, lines):
+        parents = []
+        children = []
+
+        while True:
+            if not lines:
+                sys.stderr.write('warning: unexpected end of entry\n')
+                return
+            line = lines.pop(0)
+            if line.startswith('['):
+                break
+            # read function parent line
+            mo = self._cg_parent_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (1): %r\n' % line)
+            else:
+                parent = self.translate(mo)
+                if parent.name != '<spontaneous>':
+                    parents.append(parent)
+
+        # read primary line
+        mo = self._cg_primary_re.match(line)
+        if not mo:
+            sys.stderr.write('warning: unrecognized call graph entry (2): %r\n' % line)
+            return
+        else:
+            function = self.translate(mo)
+
+        while lines:
+            line = lines.pop(0)
+
+            # read function subroutine line
+            mo = self._cg_child_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (3): %r\n' % line)
+            else:
+                child = self.translate(mo)
+                if child.name != '<spontaneous>':
+                    children.append(child)
+
+        if function.name != '<spontaneous>':
+            function.parents = parents
+            function.children = children
+
+            self.functions[function.index] = function
+
+    def parse_cycle_entry(self, lines):
+
+        # Process the parents that were not there in gprof format.
+        parents = []
+        while True:
+            if not lines:
+                write('warning: unexpected end of cycle entry\n')
+                return
+            line = lines.pop(0)
+            if line.startswith('['):
+                break
+            mo = self._cg_parent_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (6): %r\n' % line)
+            else:
+                parent = self.translate(mo)
+                if parent.name != '<spontaneous>':
+                    parents.append(parent)
+
+        # read cycle header line
+        mo = self._cg_cycle_header_re.match(line)
+        if not mo:
+            sys.stderr.write('warning: unrecognized call graph entry (4): %r\n' % line)
+            return
+        cycle = self.translate(mo)
+
+        # read cycle member lines
+        cycle.functions = []
+        for line in lines[1:]:
+            mo = self._cg_cycle_member_re.match(line)
+            if not mo:
+                sys.stderr.write('warning: unrecognized call graph entry (5): %r\n' % line)
+                continue
+            call = self.translate(mo)
+            cycle.functions.append(call)
+
+        cycle.parents = parents
+        self.cycles[cycle.cycle] = cycle
+
+    def parse_cg_entry(self, lines):
+        if any("as a whole" in linelooper for linelooper in lines):
+            self.parse_cycle_entry(lines)
+        else:
+            self.parse_function_entry(lines)
+
+    def parse_cg(self):
+        """Parse the call graph."""
+
+        # skip call graph header
+        line = self.readline()
+        while self._cg_header_re.match(line):
+            line = self.readline()
+
+        # process call graph entries
+        entry_lines = []
+        # An EOF in readline terminates the program without returning.
+        while not self._cg_footer_re.match(line):
+            if line == ';;;;;':
+                self.parse_cg_entry(entry_lines)
+                entry_lines = []
+            else:
+                entry_lines.append(line)
+            line = self.readline()
+
+    def parse(self):
+        #sys.stderr.write('warning: for axe format, edge weights are unreliable estimates derived from function total times.\n')
+        self.parse_cg()
+        self.fp.close()
+
+        profile = Profile()
+        profile[TIME] = 0.0
+
+        cycles = {}
+        for index in self.cycles:
+            cycles[index] = Cycle()
+
+
+        for entry in self.functions.values():
+            # populate the function
+            function = Function(entry.index, entry.name)
+            st = entry.self_time or 0.0
+            dt = entry.descendants_time or 0.0
+            tt = st + dt 
+            function[TIME] = st
+            function[KIDS_TIME] = dt
+            function[TOTAL_TIME] = tt
+            function[TOTAL_TIME_RATIO] = entry.percentage_time / 100.0
+
+            # populate the function calls
+            for child in entry.children:
+                call = Call(child.index)
+                # The following bogus value affects only the weighting of
+                # the calls.
+                call[TOTAL_TIME_RATIO] = function[TOTAL_TIME_RATIO]
+                st = child.self_time or 0.0
+                dt = child.descendants_time or 0.0
+                tt = st + dt
+                call[TIME] = st
+                call[KIDS_TIME] = dt
+                call[TOTAL_TIME] = tt
+
+                if child.index not in self.functions:
+                    # NOTE: functions that were never called but were discovered by gprof's
+                    # static call graph analysis dont have a call graph entry so we need
+                    # to add them here
+                    # FIXME: Is this applicable?
+                    missing = Function(child.index, child.name)
+                    function[TIME] = 0.0
+                    profile.add_function(missing)
+
+                function.add_call(call)
+
+            profile.add_function(function)
+
+            if entry.cycle is not None:
+                try:
+                    cycle = cycles[entry.cycle]
+                except KeyError:
+                    sys.stderr.write('warning: <cycle %u as a whole> entry missing\n' % entry.cycle)
+                    cycle = Cycle(entry.cycle, "<cycle %u as a whole>" % entry.cycle)
+                    cycles[entry.cycle] = cycle
+                cycle.add_function(function)    
+
+            profile[TIME] = profile[TIME] + function[TIME]
+
+        for cycle in cycles.values():
+            #st = cycle.self_time or 0.0
+            #dt = cycle.descendants_time or 0.0
+            #tt = st + dt
+            #cycle[TIME] = st
+            #cycle[KIDS_TIME] = dt
+            #cycle[TOTAL_TIME] = tt
+            #cycle[TOTAL_TIME_RATIO] = cycle.percentage_time / 100.0
+            profile.add_cycle(cycle)
+
+        # Compute derived events.
+        profile.validate()
+        profile.ratio(TIME_RATIO, TIME)
+        # Lacking call counts, fake call ratios based on total times.
+        profile.call_ratios(TOTAL_TIME_RATIO)
+        # The TOTAL_TIME_RATIO of functions is already set.  Propagate that
+        # total time to the calls.  (TOTAL_TIME is neither set nor used.)
+        for function in profile.functions.values():
+            for call in function.calls.values():
+                if call.ratio is not None:
+                    callee = profile.functions[call.callee_id]
+                    call[TOTAL_TIME_RATIO] = call.ratio * callee[TOTAL_TIME_RATIO]
+
+        return profile
+
 
 class CallgrindParser(LineParser):
     """Parser for valgrind's callgrind tool.
@@ -2918,6 +3197,7 @@ class DtraceParser(LineParser):
 
 formats = {
     "axe": AXEParser,
+    "vtune": VtuneParser,
     "callgrind": CallgrindParser,
     "hprof": HProfParser,
     "json": JsonParser,
@@ -3318,6 +3598,204 @@ class DotWriter:
         self.fp.write(s)
 
 
+class SQLiteWriter:
+    """Writer for the SQLite language.
+
+    """
+
+    def __init__(self, fp):
+        self.fp = fp
+
+    show_function_events = [TOTAL_TIME, TOTAL_TIME_RATIO, TIME, TIME_RATIO, KIDS_TIME]
+    show_edge_events = [TOTAL_TIME, TOTAL_TIME_RATIO, TIME, TIME_RATIO]
+
+    def graph(self, profile):
+        self.begin_graph()
+        self.print_summary(profile)
+        labels=[]
+        for _, function in sorted_iteritems(profile.functions):
+            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=int(function[TIME]/0.000001),cumulative_count=int(function[TOTAL_TIME]/0.000001),kids=int(function[KIDS_TIME]/0.000001),self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
+            for _, call in sorted_iteritems(function.calls):
+                callee = profile.functions[call.callee_id]
+                self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.000001), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
+                
+        for cycle in sorted(profile.cycles):
+            sys.stderr.write("%s\n"%cycle.name)
+        self.end_graph()
+
+    def begin_graph(self):
+        begincommands = """
+PRAGMA journal_mode=OFF;
+PRAGMA count_changes=OFF;
+DROP TABLE IF EXISTS files;
+DROP TABLE IF EXISTS symbols;
+DROP TABLE IF EXISTS mainrows;
+DROP TABLE IF EXISTS children;
+DROP TABLE IF EXISTS parents;
+DROP TABLE IF EXISTS summary;\n
+CREATE TABLE summary (
+counter TEXT,
+total_count INTEGER,
+total_freq INTEGER,
+tick_period REAL
+);\n
+CREATE TABLE files (
+id,
+name TEXT
+);\n
+CREATE TABLE symbols (
+id,
+name TEXT,
+filename_id INTEGER CONSTRAINT file_id_exists REFERENCES files(id)
+);\n
+CREATE TABLE mainrows (
+id INTEGER PRIMARY KEY,
+symbol_id INTEGER CONSTRAINT symbol_id_exists REFERENCES symbols(id),
+self_count INTEGER,
+cumulative_count INTEGER,
+kids INTEGER,
+self_calls INTEGER,
+total_calls INTEGER,
+self_paths INTEGER,
+total_paths INTEGER,
+pct REAL
+);\n
+CREATE TABLE children (
+self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
+parent_id INTEGER CONSTRAINT parent_exists REFERENCES mainrows(id),
+from_parent_count INTEGER,
+from_parent_calls INTEGER,
+from_parent_paths INTEGER,
+pct REAL
+);\n
+CREATE TABLE parents (
+self_id INTEGER CONSTRAINT self_exists REFERENCES mainrows(id),
+child_id INTEGER CONSTRAINT child_exists REFERENCES mainrows(id),
+to_child_count INTEGER,
+to_child_calls INTEGER,
+to_child_paths INTEGER,
+pct REAL
+);\n
+PRAGMA synchronous=OFF;\n
+BEGIN TRANSACTION;\n
+"""
+        self.write(begincommands)
+
+    def print_summary(self, profile):
+        summary_commands="""
+INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"PERF_TICKS\",%s,%s,0.000001);\n
+INSERT INTO files VALUES(1, "<unknown>");\n
+""" % (int(profile[TIME]/0.000001), int(profile[TIME]/0.000001))
+        self.write(summary_commands)
+
+
+    def end_graph(self):
+        endcommands="""
+END TRANSACTION;\n
+CREATE UNIQUE INDEX fileIndex ON files (id);
+CREATE UNIQUE INDEX symbolsIndex ON symbols (id);
+CREATE INDEX selfCountIndex ON mainrows(self_count);
+CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
+"""
+        self.write(endcommands)
+
+    def attr(self, what, **attrs):
+        self.write(what)
+        self.attr_list(attrs)
+
+    def node(self, node, **attrs):
+        self.write('INSERT INTO symbols VALUES(')
+        self.id(node)
+        self.write(', "')
+        self.id(str(attrs["symbol"]))
+        self.write('", 1);\n')
+
+        self.write('INSERT INTO mainrows VALUES (')
+        self.id(node)
+        self.write(', ')
+        self.id(attrs["symbol_id"])
+        self.write(', ')
+        self.id(attrs["self_count"])
+        self.write(', ')
+        self.id(attrs["cumulative_count"])
+        self.write(', ')
+        self.id(attrs["kids"])
+        self.write(', ')
+        self.id(attrs["self_calls"])
+        self.write(', ')
+        self.id(attrs["total_calls"])
+        self.write(', ')
+        self.id(attrs["self_paths"])
+        self.write(', ')
+        self.id(attrs["total_paths"])
+        self.write(', ')
+        self.id(attrs["pct"]*100)
+        self.write(');\n')
+
+    def edge(self, src, dst, **attrs):
+        self.write('INSERT INTO children VALUES (')
+        self.id(dst)
+        self.write(', ')
+        self.id(src)
+        self.write(', ')
+        self.id(attrs["count"])
+        self.write(', ')
+        self.id(attrs["calls"])
+        self.write(', ')
+        self.id(attrs["paths"])
+        self.write(', ')
+        self.id(attrs["pct"]*100)
+        self.write(');\n')
+        self.write('INSERT INTO parents VALUES (')
+        self.id(src)
+        self.write(', ')
+        self.id(dst)
+        self.write(', ')
+        self.id(attrs["count"])
+        self.write(', ')
+        self.id(attrs["calls"])
+        self.write(', ')
+        self.id(attrs["paths"])
+        self.write(', ')
+        self.id(attrs["pct"]*100)
+        self.write(');\n')
+
+    def attr_list(self, attrs):
+        if not attrs:
+            return
+        first = True
+        for name, value in sorted_iteritems(attrs):
+            if value is None:
+                continue
+            if first:
+                first = False
+            else:
+                self.write(", ")
+            self.id(value)
+
+    def id(self, id):
+        if isinstance(id, int):
+            s = str(id)
+        elif isinstance(id, float):
+            s = "{:2.2f}".format(id)
+        elif isinstance(id, str):
+            if id.isalnum() and not id.startswith('0x'):
+                s = id
+            else:
+                s = self.escape(id)
+        else:
+            raise TypeError
+        self.write(s)
+
+    def escape(self, s):
+        s = s.replace('\\', r'\\')
+        s = s.replace('\n', r'\n')
+        s = s.replace('\t', r'\t')
+        s = s.replace('"', r'\"')
+        return s
+
+    def write(self, s):
+        self.fp.write(s)
 
 ########################################################################
 # Main program
