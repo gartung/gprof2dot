@@ -118,18 +118,20 @@ SAMPLES2 = Event("Samples", 0, add, times)
 # Used only when totalMethod == callstacks
 TOTAL_SAMPLES = Event("Samples", 0, add, times)
 
-TIME = Event("Time", 0.0, add, lambda x: str(x))
+TIME = Event("Self Time", 0.0, add, lambda x: str(x))
+KIDS_TIME = Event("Descendants Time", 0.0, add, lambda x: str(x))
 TIME_RATIO = Event("Time ratio", 0.0, add, lambda x: percentage(x))
-TOTAL_TIME = Event("Total time", 0.0, fail, lambda x: str(x))
-TOTAL_TIME_RATIO = Event("Total time ratio", 0.0, fail, lambda x: percentage(x))
+TOTAL_TIME = Event("Cumulative time", 0.0, fail, lambda x: str(x))
+TOTAL_TIME_RATIO = Event("Cumulative time ratio", 0.0, fail, lambda x: percentage(x))
 
 labels = {
     'self-time': TIME,
+    'kids-time': KIDS_TIME,
     'self-time-percentage': TIME_RATIO,
     'total-time': TOTAL_TIME,
     'total-time-percentage': TOTAL_TIME_RATIO,
 }
-defaultLabelNames = ['total-time-percentage', 'self-time-percentage']
+defaultLabelNames = ['total-time-percentage', 'self-time-percentage', 'total-time', 'total-time-percentage', 'kida-time']
 
 totalMethod = 'callratios'
 
@@ -254,8 +256,10 @@ class Function(Object):
 class Cycle(Object):
     """A cycle made from recursive function calls."""
 
-    def __init__(self):
+    def __init__(self, id, name):
         Object.__init__(self)
+        self.id = id
+        self.name = name
         self.functions = set()
 
     def add_function(self, function):
@@ -767,10 +771,11 @@ class Profile(Object):
                 sys.stderr.write('  Call %s:\n' % (callee.name,))
                 self._dump_events(call.events)
         for cycle in self.cycles:
-            sys.stderr.write('Cycle:\n')
+            sys.stderr.write("Cycle: %s\n" % cycle.name)
             self._dump_events(cycle.events)
             for function in cycle.functions:
                 sys.stderr.write('  Function %s\n' % (function.name,))
+                self._dump_events(function.events)
 
     def _dump_events(self, events):
         for event, value in events.items():
@@ -876,16 +881,16 @@ class VtuneParser(Parser):
     _cg_primary_re = re.compile(
         r'^\[(?P<index>\d+)\];' +
         r'(?P<percentage_time>\d+\.\d+);' +
-        r'(?P<self>\d+\.\d+);' +
-        r'(?P<descendants>(-)?\d+\.\d+);' +
+        r'(?P<self_time>\d+\.\d+);' +
+        r'(?P<descendants_time>(-)?\d+\.\d+);' +
         r'(?P<name>\S.*?)' +
         r'(?:\s+<cycle\s(?P<cycle>\d+)>)?;' +
         r'\[(\d+)\]$'
     )
     assert(_cg_primary_re.match('[1];108.69;0.099967;8162.684926;[Stitch point frame] <cycle 95>;[1]'))
     _cg_parent_re = re.compile(
-        r'^;;(?P<self>\d+\.\d+)?' +
-        r';(?P<descendants>\d+\.\d+)?' +
+        r'^;;(?P<self_time>\d+\.\d+)?' +
+        r';(?P<descendants_time>\d+\.\d+)?' +
         r';\s\s((?P<name>\S.*?)' +
         r'(?:\s<cycle\s(?P<cycle>\d+)>)?' +
         r';(?:\[(?P<index>\d+)\])|<spontaneous>;)$'
@@ -899,8 +904,8 @@ class VtuneParser(Parser):
     _cg_cycle_header_re = re.compile(
         r'^\[(?P<index>\d+)\]?;' +
         r'(?P<percentage_time>\d+\.\d+)?;' +
-        r'(?P<self>\d+\.\d+)?;' +
-        r'(?P<descendants>-?\d+\.\d+)?;' +
+        r'(?P<self_time>\d+\.\d+)?;' +
+        r'(?P<descendants_time>-?\d+\.\d+)?;' +
         r'<cycle\s(?P<cycle>\d+)\sas\sa\swhole>;' +
         r'\[(\d+)\]$'
     )
@@ -908,8 +913,8 @@ class VtuneParser(Parser):
     assert(_cg_cycle_header_re.match('[1346];0.03;0.480006;-0.000000;<cycle 25 as a whole>;[1346]'))
 
     _cg_cycle_member_re = re.compile(
-        r'^;;(?P<self>\d+\.\d+)?' +
-        r';(?P<descendants>\d+\.\d+)?' +
+        r'^;;(?P<self_time>\d+\.\d+)?' +
+        r';(?P<descendants_time>\d+\.\d+)?' +
         r';\s\s(?P<name>\S.*?)' +
         r'(?:\s+<cycle\s(?P<cycle>\d+)>)?' +
         r';\[(?P<index>\d+)\]$'
@@ -970,7 +975,7 @@ class VtuneParser(Parser):
         parents = []
         while True:
             if not lines:
-                sys.stderr.write('warning: unexpected end of cycle entry\n')
+                write('warning: unexpected end of cycle entry\n')
                 return
             line = lines.pop(0)
             if line.startswith('['):
@@ -980,7 +985,6 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (6): %r\n' % line)
             else:
                 parent = self.translate(mo)
-                #print("cycle parent : %s" % parent)
                 if parent.name != '<spontaneous>':
                     parents.append(parent)
 
@@ -990,7 +994,6 @@ class VtuneParser(Parser):
             sys.stderr.write('warning: unrecognized call graph entry (4): %r\n' % line)
             return
         cycle = self.translate(mo)
-        #print("cycle : %s" % cycle)
 
         # read cycle member lines
         cycle.functions = []
@@ -1000,7 +1003,6 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (5): %r\n' % line)
                 continue
             call = self.translate(mo)
-            #print("call : %s" % call)
             cycle.functions.append(call)
 
         cycle.parents = parents
@@ -1041,12 +1043,18 @@ class VtuneParser(Parser):
 
         cycles = {}
         for index in self.cycles:
-            cycles[index] = Cycle()
+            cycles[index] = Cycle(index, "<cycle %u as a whole>" % index)
+
 
         for entry in self.functions.values():
             # populate the function
             function = Function(entry.index, entry.name)
-            function[TIME] = entry.self
+            st = entry.self_time or 0.0
+            dt = entry.descendants_time or 0.0
+            tt = st + dt 
+            function[TIME] = st
+            function[KIDS_TIME] = dt
+            function[TOTAL_TIME] = tt
             function[TOTAL_TIME_RATIO] = entry.percentage_time / 100.0
 
             # populate the function calls
@@ -1055,6 +1063,12 @@ class VtuneParser(Parser):
                 # The following bogus value affects only the weighting of
                 # the calls.
                 call[TOTAL_TIME_RATIO] = function[TOTAL_TIME_RATIO]
+                st = child.self_time or 0.0
+                dt = child.descendants_time or 0.0
+                tt = st + dt
+                call[TIME] = st
+                call[KIDS_TIME] = dt
+                call[TOTAL_TIME] = tt
 
                 if child.index not in self.functions:
                     # NOTE: functions that were never called but were discovered by gprof's
@@ -1074,13 +1088,20 @@ class VtuneParser(Parser):
                     cycle = cycles[entry.cycle]
                 except KeyError:
                     sys.stderr.write('warning: <cycle %u as a whole> entry missing\n' % entry.cycle)
-                    cycle = Cycle()
+                    cycle = Cycle(entry.cycle, "<cycle %u as a whole>" % entry.cycle)
                     cycles[entry.cycle] = cycle
-                cycle.add_function(function)
+                cycle.add_function(function)    
 
             profile[TIME] = profile[TIME] + function[TIME]
 
         for cycle in cycles.values():
+            #st = cycle.self_time or 0.0
+            #dt = cycle.descendants_time or 0.0
+            #tt = st + dt
+            #cycle[TIME] = st
+            #cycle[KIDS_TIME] = dt
+            #cycle[TOTAL_TIME] = tt
+            #cycle[TOTAL_TIME_RATIO] = cycle.percentage_time / 100.0
             profile.add_cycle(cycle)
 
         # Compute derived events.
@@ -1108,20 +1129,21 @@ class SQLiteWriter:
     def __init__(self, fp):
         self.fp = fp
 
-    show_function_events = [TOTAL_TIME_RATIO, TIME_RATIO]
-    show_edge_events = [TOTAL_TIME_RATIO, CALLS]
+    show_function_events = [TOTAL_TIME, TOTAL_TIME_RATIO, TIME, TIME_RATIO, KIDS_TIME]
+    show_edge_events = [TOTAL_TIME, TOTAL_TIME_RATIO, TIME, TIME_RATIO]
 
     def graph(self, profile):
         self.begin_graph()
+        self.print_summary(profile)
         labels=[]
         for _, function in sorted_iteritems(profile.functions):
-            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=0,cumulative_count=0,kids=0,self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
-
+            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=int(function[TIME]/0.005),cumulative_count=int(function[TOTAL_TIME]/0.005),kids=int(function[KIDS_TIME]/0.005),self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
             for _, call in sorted_iteritems(function.calls):
                 callee = profile.functions[call.callee_id]
-
-                self.edge(function.id, call.callee_id , count=0, calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
-
+                self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.005), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
+                
+        for cycle in sorted(profile.cycles):
+            sys.stderr.write("%s\n"%cycle.name)
         self.end_graph()
 
     def begin_graph(self):
@@ -1179,10 +1201,16 @@ pct REAL
 );\n
 PRAGMA synchronous=OFF;\n
 BEGIN TRANSACTION;\n
-INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"Seconds\",1,1,1.0);\n
-INSERT INTO files VALUES(1, "<unknown>");\n
 """
         self.write(begincommands)
+
+    def print_summary(self, profile):
+        summary_commands="""
+INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"PERF_TICKS\",%s,%s,0.005);\n
+INSERT INTO files VALUES(1, "<unknown>");\n
+""" % (int(profile[TIME]/0.005), int(profile[TIME]/0.005))
+        self.write(summary_commands)
+
 
     def end_graph(self):
         endcommands="""
@@ -1201,9 +1229,9 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
     def node(self, node, **attrs):
         self.write('INSERT INTO symbols VALUES(')
         self.id(node)
-        self.write(', ')
+        self.write(', "')
         self.id(str(attrs["symbol"]))
-        self.write(', 1);\n')
+        self.write('", 1);\n')
 
         self.write('INSERT INTO mainrows VALUES (')
         self.id(node)
@@ -1224,14 +1252,14 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.write(', ')
         self.id(attrs["total_paths"])
         self.write(', ')
-        self.id(attrs["pct"])
+        self.id(attrs["pct"]*100)
         self.write(');\n')
 
     def edge(self, src, dst, **attrs):
         self.write('INSERT INTO children VALUES (')
-        self.id(src)
-        self.write(', ')
         self.id(dst)
+        self.write(', ')
+        self.id(src)
         self.write(', ')
         self.id(attrs["count"])
         self.write(', ')
@@ -1239,12 +1267,12 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.write(', ')
         self.id(attrs["paths"])
         self.write(', ')
-        self.id(attrs["pct"])
+        self.id(attrs["pct"]*100)
         self.write(');\n')
         self.write('INSERT INTO parents VALUES (')
-        self.id(dst)
-        self.write(', ')
         self.id(src)
+        self.write(', ')
+        self.id(dst)
         self.write(', ')
         self.id(attrs["count"])
         self.write(', ')
@@ -1252,7 +1280,7 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.write(', ')
         self.id(attrs["paths"])
         self.write(', ')
-        self.id(attrs["pct"])
+        self.id(attrs["pct"]*100)
         self.write(');\n')
 
     def attr_list(self, attrs):
@@ -1272,7 +1300,7 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         if isinstance(id, int):
             s = str(id)
         elif isinstance(id, float):
-            s = "{:2.4f}".format(id)
+            s = "{:2.2f}".format(id)
         elif isinstance(id, str):
             if id.isalnum() and not id.startswith('0x'):
                 s = id
@@ -1287,7 +1315,7 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         s = s.replace('\n', r'\n')
         s = s.replace('\t', r'\t')
         s = s.replace('"', r'\"')
-        return '"' + s + '"'
+        return s
 
     def write(self, s):
         self.fp.write(s)
@@ -1327,6 +1355,7 @@ def main(argv=sys.argv[1:]):
         parser = Format(args[0])
 
     profile = parser.parse()
+    #profile.prune(0.000001, 0.000001, "", True)
 
     if options.output is None:
         output = open(sys.stdout.fileno(), mode='wt', encoding='UTF-8', closefd=False)
