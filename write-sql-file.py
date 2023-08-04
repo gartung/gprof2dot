@@ -861,7 +861,6 @@ class VtuneParser(Parser):
         """Extract a structure from a match object, while translating the types in the process."""
         attrs = {}
         groupdict = mo.groupdict()
-        #print(groupdict)
         for name, value in sorted_iteritems(groupdict):
             if value is None:
                 value = None
@@ -937,7 +936,6 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (1): %r\n' % line)
             else:
                 parent = self.translate(mo)
-                #print("function parent : %s" % parent)
                 if parent.name != '<spontaneous>':
                     parents.append(parent)
 
@@ -948,7 +946,6 @@ class VtuneParser(Parser):
             return
         else:
             function = self.translate(mo)
-            #print("function : %s" % function)
 
         while lines:
             line = lines.pop(0)
@@ -959,7 +956,6 @@ class VtuneParser(Parser):
                 sys.stderr.write('warning: unrecognized call graph entry (3): %r\n' % line)
             else:
                 child = self.translate(mo)
-                #print("function child : %s" % child)
                 if child.name != '<spontaneous>':
                     children.append(child)
 
