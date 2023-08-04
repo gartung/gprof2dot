@@ -1137,10 +1137,10 @@ class SQLiteWriter:
         self.print_summary(profile)
         labels=[]
         for _, function in sorted_iteritems(profile.functions):
-            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=int(function[TIME]/0.005),cumulative_count=int(function[TOTAL_TIME]/0.005),kids=int(function[KIDS_TIME]/0.005),self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
+            self.node(function.id,symbol=function.name,symbol_id=function.id,self_count=int(function[TIME]/0.000001),cumulative_count=int(function[TOTAL_TIME]/0.000001),kids=int(function[KIDS_TIME]/0.000001),self_calls=0,total_calls=0,self_paths=0,total_paths=0,pct=function[TOTAL_TIME_RATIO])
             for _, call in sorted_iteritems(function.calls):
                 callee = profile.functions[call.callee_id]
-                self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.005), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
+                self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.000001), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
                 
         for cycle in sorted(profile.cycles):
             sys.stderr.write("%s\n"%cycle.name)
@@ -1206,9 +1206,9 @@ BEGIN TRANSACTION;\n
 
     def print_summary(self, profile):
         summary_commands="""
-INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"PERF_TICKS\",%s,%s,0.005);\n
+INSERT INTO summary (counter, total_count, total_freq, tick_period) VALUES(\"PERF_TICKS\",%s,%s,0.000001);\n
 INSERT INTO files VALUES(1, "<unknown>");\n
-""" % (int(profile[TIME]/0.005), int(profile[TIME]/0.005))
+""" % (int(profile[TIME]/0.000001), int(profile[TIME]/0.000001))
         self.write(summary_commands)
 
 
