@@ -1648,6 +1648,7 @@ class AXEParser(Parser):
 
         return profile
 
+
 class VtuneParser(Parser):
     "Parser for VTune gprof-cc report output with semicolon delimiters."
 
@@ -1858,7 +1859,7 @@ class VtuneParser(Parser):
             function = Function(entry.index, entry.name)
             st = entry.self_time or 0.0
             dt = entry.descendants_time or 0.0
-            tt = st + dt 
+            tt = st + dt
             function[TIME] = st
             function[KIDS_TIME] = dt
             function[TOTAL_TIME] = tt
@@ -1897,7 +1898,7 @@ class VtuneParser(Parser):
                     sys.stderr.write('warning: <cycle %u as a whole> entry missing\n' % entry.cycle)
                     cycle = Cycle(entry.cycle, "<cycle %u as a whole>" % entry.cycle)
                     cycles[entry.cycle] = cycle
-                cycle.add_function(function)    
+                cycle.add_function(function)
 
             profile[TIME] = profile[TIME] + function[TIME]
 
@@ -3618,7 +3619,7 @@ class SQLiteWriter:
             for _, call in sorted_iteritems(function.calls):
                 callee = profile.functions[call.callee_id]
                 self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.000001), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
-                
+
         for cycle in sorted(profile.cycles):
             sys.stderr.write("%s\n"%cycle.name)
         self.end_graph()

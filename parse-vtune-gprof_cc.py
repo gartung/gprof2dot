@@ -183,6 +183,18 @@ class Call(Object):
         self.ratio = None
         self.weight = None
 
+class Caller(Object):
+    """A call between functions.
+
+    There should be at most one call object for every pair of functions.
+    """
+
+    def __init__(self, caller_id):
+        Object.__init__(self)
+        self.caller_id = caller_id
+        self.ratio = None
+        self.weight = None
+
 
 class Function(Object):
     """A function."""
@@ -194,6 +206,7 @@ class Function(Object):
         self.module = None
         self.process = None
         self.calls = {}
+        self.callers = {}
         self.called = None
         self.weight = None
         self.cycle = None
@@ -204,6 +217,11 @@ class Function(Object):
             sys.stderr.write('warning: overwriting call from function %s to %s\n' % (str(self.id), str(call.callee_id)))
         self.calls[call.callee_id] = call
 
+    def add_caller(self, caller):
+        if caller.caller_id in self.callers:
+            sys.stderr.write('warning: overwriting caller of function %s to %s\n' % (str(caller.callee_id), str(self.id)))
+        self.callers[caller.caller_id] = caller
+
     def get_call(self, callee_id):
         if not callee_id in self.calls:
             call = Call(callee_id)
@@ -212,6 +230,15 @@ class Function(Object):
             call[CALLS] = 0
             self.calls[callee_id] = call
         return self.calls[callee_id]
+
+    def get_caller(self, caller_id):
+        if not caller_id in self.callers:
+            caller = Caller(caller_id)
+            caller[SAMPLES] = 0
+            caller[SAMPLES2] = 0
+            caller[CALLS] = 0
+            self.callers[caller_id] = caller
+        return self.callers[caller_id]
 
     _parenthesis_re = re.compile(r'\([^()]*\)')
     _angles_re = re.compile(r'<[^<>]*>')
@@ -764,12 +791,14 @@ class Profile(Object):
 
     def dump(self):
         for function in self.functions.values():
-            sys.stderr.write('Function %s:\n' % (function.name,))
+            sys.stderr.write('\nFunction %s id %s\n' % (function.name, function.id))
             self._dump_events(function.events)
+            for call in function.callers.values():
+                caller = self.functions[call.caller_id]
+                sys.stderr.write('\n  Caller %s id %s:\n' % (caller.name,call.caller_id))
             for call in function.calls.values():
                 callee = self.functions[call.callee_id]
-                sys.stderr.write('  Call %s:\n' % (callee.name,))
-                self._dump_events(call.events)
+                sys.stderr.write('\n  Callee %s id %s:\n' % (callee.name,call.callee_id))
         for cycle in self.cycles:
             sys.stderr.write("Cycle: %s\n" % cycle.name)
             self._dump_events(cycle.events)
@@ -1030,41 +1059,45 @@ class VtuneParser(Parser):
             line = self.readline()
 
     def parse(self):
-        #sys.stderr.write('warning: for axe format, edge weights are unreliable estimates derived from function total times.\n')
         self.parse_cg()
         self.fp.close()
 
         profile = Profile()
-        profile[TIME] = 0.0
+        profile[TIME]=0.0
+        profile[KIDS_TIME]=0.0
+        profile[TOTAL_TIME]=0.0
 
         cycles = {}
         for index in self.cycles:
             cycles[index] = Cycle(index, "<cycle %u as a whole>" % index)
 
-
         for entry in self.functions.values():
             # populate the function
             function = Function(entry.index, entry.name)
-            st = entry.self_time or 0.0
-            dt = entry.descendants_time or 0.0
-            tt = st + dt 
-            function[TIME] = st
-            function[KIDS_TIME] = dt
-            function[TOTAL_TIME] = tt
+            function[TIME] = entry.self_time
+            if entry.descendants_time:
+                function[KIDS_TIME] = entry.descendants_time
+            else:
+                function[KIDS_TIME] = 0.0
+            function[TOTAL_TIME] = function[TIME] + function[KIDS_TIME]
             function[TOTAL_TIME_RATIO] = entry.percentage_time / 100.0
 
             # populate the function calls
             for child in entry.children:
                 call = Call(child.index)
+                if child.self_time:
+                    call[TIME] = child.self_time
+                else:
+                    call[TIME] = 0.0
+                if child.descendants_time:
+                    call[KIDS_TIME] = child.descendants_time
+                else:
+                    call[KIDS_TIME] = 0.0
+                call[TOTAL_TIME] = call[TIME] + call[KIDS_TIME]
+
                 # The following bogus value affects only the weighting of
                 # the calls.
                 call[TOTAL_TIME_RATIO] = function[TOTAL_TIME_RATIO]
-                st = child.self_time or 0.0
-                dt = child.descendants_time or 0.0
-                tt = st + dt
-                call[TIME] = st
-                call[KIDS_TIME] = dt
-                call[TOTAL_TIME] = tt
 
                 if child.index not in self.functions:
                     # NOTE: functions that were never called but were discovered by gprof's
@@ -1077,6 +1110,15 @@ class VtuneParser(Parser):
 
                 function.add_call(call)
 
+            for parent in entry.parents:
+                if parent.index:
+                    caller = Caller(parent.index)
+                    caller[TOTAL_TIME_RATIO] = 0.0
+                    caller[TIME] = 0.0
+                    caller[KIDS_TIME] = 0.0
+                    caller[TOTAL_TIME] = 0.0
+                    function.add_caller(caller)
+
             profile.add_function(function)
 
             if entry.cycle is not None:
@@ -1086,22 +1128,24 @@ class VtuneParser(Parser):
                     sys.stderr.write('warning: <cycle %u as a whole> entry missing\n' % entry.cycle)
                     cycle = Cycle(entry.cycle, "<cycle %u as a whole>" % entry.cycle)
                     cycles[entry.cycle] = cycle
-                cycle.add_function(function)    
+                cycle.add_function(function)
 
             profile[TIME] = profile[TIME] + function[TIME]
 
         for cycle in cycles.values():
-            #st = cycle.self_time or 0.0
-            #dt = cycle.descendants_time or 0.0
-            #tt = st + dt
-            #cycle[TIME] = st
-            #cycle[KIDS_TIME] = dt
-            #cycle[TOTAL_TIME] = tt
-            #cycle[TOTAL_TIME_RATIO] = cycle.percentage_time / 100.0
             profile.add_cycle(cycle)
 
         # Compute derived events.
         profile.validate()
+        #for function in profile.functions.values():
+        #    function[KIDS_TIME] = 0.0
+        #    for call in function.calls.values():
+        #        callee = profile.functions[call.callee_id]
+        #        function[KIDS_TIME] = function[KIDS_TIME] + callee[TOTAL_TIME]
+        #        function[TOTAL_TIME_RATIO] = function[TOTAL_TIME_RATIO] + callee[TOTAL_TIME_RATIO]
+        #    function[TOTAL_TIME] = function[TIME] + function[KIDS_TIME]
+        #    profile[TOTAL_TIME] = profile[TOTAL_TIME] + function[TOTAL_TIME]
+
         profile.ratio(TIME_RATIO, TIME)
         # Lacking call counts, fake call ratios based on total times.
         profile.call_ratios(TOTAL_TIME_RATIO)
@@ -1112,6 +1156,7 @@ class VtuneParser(Parser):
                 if call.ratio is not None:
                     callee = profile.functions[call.callee_id]
                     call[TOTAL_TIME_RATIO] = call.ratio * callee[TOTAL_TIME_RATIO]
+
 
         return profile
 
@@ -1137,9 +1182,10 @@ class SQLiteWriter:
             for _, call in sorted_iteritems(function.calls):
                 callee = profile.functions[call.callee_id]
                 self.edge(function.id, call.callee_id , count=int(call[TOTAL_TIME]/0.000001), calls=0, paths=0,pct=call[TOTAL_TIME_RATIO])
-                
-        for cycle in sorted(profile.cycles):
-            sys.stderr.write("%s\n"%cycle.name)
+            for _, call in sorted_iteritems(function.callers):
+                caller = profile.functions[call.caller_id]
+                self.to_edge(function.id, caller.id , count=int(caller[TOTAL_TIME]/0.000001), calls=0, paths=0,pct=caller[TOTAL_TIME_RATIO])
+
         self.end_graph()
 
     def begin_graph(self):
@@ -1265,6 +1311,8 @@ CREATE INDEX totalCountIndex ON mainrows(cumulative_count);
         self.write(', ')
         self.id(attrs["pct"]*100)
         self.write(');\n')
+
+    def to_edge(self, src, dst, **attrs):
         self.write('INSERT INTO parents VALUES (')
         self.id(src)
         self.write(', ')
@@ -1351,7 +1399,6 @@ def main(argv=sys.argv[1:]):
         parser = Format(args[0])
 
     profile = parser.parse()
-    #profile.prune(0.000001, 0.000001, "", True)
 
     if options.output is None:
         output = open(sys.stdout.fileno(), mode='wt', encoding='UTF-8', closefd=False)
